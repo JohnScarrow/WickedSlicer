@@ -303,8 +303,11 @@ public:
         m_fg_color = StateColor::darkModeColorFor(wxColour("#6B6A6A"));
         bool dark_mode = m_fg_color != wxColour("#6B6A6A");
         wxSize sz  = m_window->GetClientSize();
-        BitmapCache bmp_cache;
-        m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+        wxImage img(Slic3r::var("WickedSlicer_splash.png"), wxBITMAP_TYPE_PNG);
+        if (img.IsOk()) {
+            img.Rescale(sz.GetWidth(), sz.GetHeight(), wxIMAGE_QUALITY_HIGH);
+            m_logo_bmp = wxBitmap(img);
+        }
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
         m_window->Refresh();
@@ -370,7 +373,7 @@ private:
     wxColour m_fg_color;
     wxColour m_bg_color;
 
-    wxString m_text_version = GUI_App::format_display_version();
+    wxString m_text_version = "WickedSlicer — " + GUI_App::format_display_version();
     wxString m_text_action  = _L("Loading configuration") + dots;
 
     wxFont m_font_version = Label::Body_16;

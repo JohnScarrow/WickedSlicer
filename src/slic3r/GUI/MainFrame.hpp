@@ -29,6 +29,7 @@
 
 
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <ctime>
 
 // BBS
 #include "BBLTopbar.hpp"
@@ -98,7 +99,10 @@ class MainFrame : public DPIFrame
     bool     m_mac_fullscreen{false};
 #endif
     bool     m_loaded {false};
-    wxTimer* m_reset_title_text_colour_timer{ nullptr };
+    wxTimer*              m_reset_title_text_colour_timer{ nullptr };
+    wxTimer*              m_preset_poll_timer{ nullptr };
+    std::vector<std::string>  m_preset_dirs;
+    std::vector<std::time_t>  m_preset_dir_mtimes;
 
     wxString    m_qs_last_input_file = wxEmptyString;
     wxString    m_qs_last_output_file = wxEmptyString;
@@ -122,6 +126,7 @@ class MainFrame : public DPIFrame
 
     void on_presets_changed(SimpleEvent&);
     void on_value_changed(wxCommandEvent&);
+    void on_preset_poll_timer(wxTimerEvent& e);
 
     bool can_start_new_project() const;
     bool can_open_project() const;

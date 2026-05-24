@@ -11,10 +11,12 @@
 #include <wx/tooltip.h>
 //#include <wx/glcanvas.h>
 #include <wx/filename.h>
+#include "libslic3r/Utils.hpp"
 #include <wx/debug.h>
 #include <wx/utils.h>
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -762,6 +764,23 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     // bind events from DiffDlg
 
     bind_diff_dialog();
+
+    // Poll user preset directories every 2 s and reload if any mtime changed.
+    // Presets are saved into the "base" subdirectory by the GUI.
+    const std::string user_dir = Slic3r::data_dir() + "/" + PRESET_USER_DIR + "/" + DEFAULT_USER_FOLDER_NAME;
+    m_preset_dirs = {
+        user_dir + "/" + PRESET_FILAMENT_NAME + "/base", // filament presets save into base/
+        user_dir + "/" + PRESET_PRINT_NAME,               // process presets save directly here
+        user_dir + "/" + PRESET_PRINTER_NAME,             // machine presets save directly here
+    };
+    m_preset_dir_mtimes.resize(m_preset_dirs.size(), 0);
+    for (size_t i = 0; i < m_preset_dirs.size(); ++i) {
+        boost::system::error_code ec;
+        m_preset_dir_mtimes[i] = boost::filesystem::last_write_time(m_preset_dirs[i], ec);
+    }
+    m_preset_poll_timer = new wxTimer(this);
+    Bind(wxEVT_TIMER, &MainFrame::on_preset_poll_timer, this, m_preset_poll_timer->GetId());
+    m_preset_poll_timer->Start(2000);
 }
 
 void MainFrame::bind_diff_dialog()
@@ -1112,6 +1131,11 @@ void MainFrame::shutdown()
     m_edge_left   = nullptr;
     m_edge_right  = nullptr;
 #endif
+    if (m_preset_poll_timer) {
+        m_preset_poll_timer->Stop();
+        m_preset_poll_timer = nullptr;
+    }
+
     // BBS: backup
     Slic3r::set_backup_callback(nullptr);
 #ifdef _WIN32
@@ -1192,7 +1216,7 @@ void MainFrame::update_filament_tab_ui()
 
 void MainFrame::update_title()
 {
-    return;
+    SetTitle("WickedSlicer");
 }
 
 void MainFrame::show_publish_button(bool show)
@@ -4263,6 +4287,25 @@ void MainFrame::update_side_preset_ui()
 
     //take off multi machine
     if(m_multi_machine){m_multi_machine->clear_page();}
+}
+
+void MainFrame::on_preset_poll_timer(wxTimerEvent&)
+{
+    bool changed = false;
+    for (size_t i = 0; i < m_preset_dirs.size(); ++i) {
+        boost::system::error_code ec;
+        std::time_t mtime = boost::filesystem::last_write_time(m_preset_dirs[i], ec);
+        if (!ec && mtime != m_preset_dir_mtimes[i]) {
+            m_preset_dir_mtimes[i] = mtime;
+            changed = true;
+        }
+    }
+    if (changed) {
+        BOOST_LOG_TRIVIAL(info) << "Preset directory change detected, reloading.";
+        wxGetApp().preset_bundle->load_presets(*wxGetApp().app_config,
+            ForwardCompatibilitySubstitutionRule::EnableSilentDisableSystem);
+        update_side_preset_ui();
+    }
 }
 
 void MainFrame::on_select_default_preset(SimpleEvent& evt)
