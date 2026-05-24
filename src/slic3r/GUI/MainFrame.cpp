@@ -4300,11 +4300,56 @@ void MainFrame::on_preset_poll_timer(wxTimerEvent&)
             changed = true;
         }
     }
-    if (changed) {
-        BOOST_LOG_TRIVIAL(info) << "Preset directory change detected, reloading.";
-        wxGetApp().preset_bundle->load_presets(*wxGetApp().app_config,
-            ForwardCompatibilitySubstitutionRule::EnableSilentDisableSystem);
-        update_side_preset_ui();
+    if (!changed)
+        return;
+
+    BOOST_LOG_TRIVIAL(info) << "Preset directory change detected, proposing changes as dirty edits.";
+
+    // Snapshot each tab's selected preset config before reloading from disk.
+    // After load_presets() both selected and edited will be updated to the new
+    // disk values (no dirty state).  We then restore the selected config to the
+    // old values so that selected != edited, which makes the dirty indicators
+    // appear for every key the AI changed.  The user can review and Save or Discard.
+    struct TabSnapshot {
+        PresetCollection*  collection;
+        Tab*               tab;
+        DynamicPrintConfig old_selected;
+    };
+
+    std::vector<TabSnapshot> snapshots;
+    for (Preset::Type type : { Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER }) {
+        Tab* tab = wxGetApp().get_tab(type);
+        if (!tab) continue;
+        PresetCollection* coll = tab->get_presets();
+        if (!coll) continue;
+        snapshots.push_back({ coll, tab, coll->get_selected_preset().config });
+    }
+
+    // Reload all presets from disk (sets both selected and edited to new values).
+    wxGetApp().preset_bundle->load_presets(*wxGetApp().app_config,
+        ForwardCompatibilitySubstitutionRule::EnableSilentDisableSystem);
+    update_side_preset_ui();
+
+    // For each tab, restore the selected preset's config to the old values for
+    // any keys that changed, so dirty indicators appear on those fields.
+    for (auto& s : snapshots) {
+        DynamicPrintConfig& selected_config = s.collection->get_selected_preset().config;
+        DynamicPrintConfig& edited_config   = s.collection->get_edited_preset().config;
+
+        bool preset_changed = false;
+        for (const std::string& key : edited_config.keys()) {
+            const ConfigOption* new_opt = edited_config.option(key);
+            const ConfigOption* old_opt = s.old_selected.option(key);
+            if (new_opt && old_opt && *new_opt != *old_opt) {
+                // This key changed on disk: leave edited at the new value,
+                // restore selected to the old value so the dirty indicator fires.
+                selected_config.set_key_value(key, old_opt->clone());
+                preset_changed = true;
+            }
+        }
+
+        if (preset_changed)
+            s.tab->update_dirty();
     }
 }
 
