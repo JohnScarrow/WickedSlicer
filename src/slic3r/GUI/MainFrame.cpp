@@ -765,18 +765,36 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
     bind_diff_dialog();
 
-    // Poll user preset directories every 2 s and reload if any mtime changed.
-    // Presets are saved into the "base" subdirectory by the GUI.
-    const std::string user_dir = Slic3r::data_dir() + "/" + PRESET_USER_DIR + "/" + DEFAULT_USER_FOLDER_NAME;
-    m_preset_dirs = {
-        user_dir + "/" + PRESET_FILAMENT_NAME + "/base", // filament presets save into base/
-        user_dir + "/" + PRESET_PRINT_NAME,               // process presets save directly here
-        user_dir + "/" + PRESET_PRINTER_NAME,             // machine presets save directly here
-    };
-    m_preset_dir_mtimes.resize(m_preset_dirs.size(), 0);
-    for (size_t i = 0; i < m_preset_dirs.size(); ++i) {
-        boost::system::error_code ec;
-        m_preset_dir_mtimes[i] = boost::filesystem::last_write_time(m_preset_dirs[i], ec);
+    // Poll preset directories every 2 s and reload if any file mtime changed.
+    // We track individual file mtimes (not directory mtimes) so that edits to
+    // existing .json files are detected — Linux only updates directory mtime
+    // when files are created/deleted, not when file contents change.
+    {
+        const std::string user_dir  = Slic3r::data_dir() + "/" + PRESET_USER_DIR + "/" + DEFAULT_USER_FOLDER_NAME;
+        const std::string sys_custom = Slic3r::data_dir() + "/system/Custom";
+        m_preset_dirs = {
+            user_dir    + "/" + PRESET_FILAMENT_NAME + "/base",
+            user_dir    + "/" + PRESET_PRINT_NAME,
+            user_dir    + "/" + PRESET_PRINTER_NAME,
+            sys_custom  + "/" + PRESET_FILAMENT_NAME,
+            sys_custom  + "/" + PRESET_PRINT_NAME,
+            sys_custom  + "/" + PRESET_PRINTER_NAME,
+        };
+        // Build the per-file mtime snapshot.
+        m_preset_file_mtimes.clear();
+        for (const auto& dir : m_preset_dirs) {
+            boost::system::error_code ec;
+            if (!boost::filesystem::is_directory(dir, ec)) continue;
+            for (const auto& entry : boost::filesystem::directory_iterator(dir, ec)) {
+                if (entry.path().extension() != ".json") continue;
+                boost::system::error_code fe;
+                std::time_t mt = boost::filesystem::last_write_time(entry.path(), fe);
+                if (!fe) m_preset_file_mtimes[entry.path().string()] = mt;
+            }
+        }
+        // Keep legacy dir-mtime vector the right size (unused but avoids crashes
+        // if anything still indexes it).
+        m_preset_dir_mtimes.assign(m_preset_dirs.size(), 0);
     }
     m_preset_poll_timer = new wxTimer(this);
     Bind(wxEVT_TIMER, &MainFrame::on_preset_poll_timer, this, m_preset_poll_timer->GetId());
@@ -3145,6 +3163,15 @@ void MainFrame::init_menubar_as_editor()
         //        std::string show_build_edges = wxGetApp().app_config->get("show_build_edges");
         //        return show_build_edges.compare("true") == 0;
         //    }, this);
+
+        viewMenu->AppendSeparator();
+        append_menu_check_item(viewMenu, wxID_ANY,
+            _L("AI Assistant"),
+            _L("Show or hide the AI Assistant panel"),
+            [this](wxCommandEvent&) { m_plater->toggle_ai_assistant(); }, this,
+            [this]() { return m_plater != nullptr; },
+            [this]() { return m_plater != nullptr && m_plater->is_ai_assistant_visible(); },
+            this);
     }
 
     wxWindowID config_id_base = wxWindow::NewControlId(int(ConfigMenuCnt));
@@ -4289,68 +4316,101 @@ void MainFrame::update_side_preset_ui()
     if(m_multi_machine){m_multi_machine->clear_page();}
 }
 
-void MainFrame::on_preset_poll_timer(wxTimerEvent&)
+void MainFrame::reload_presets_from_disk(bool mark_dirty)
 {
-    bool changed = false;
-    for (size_t i = 0; i < m_preset_dirs.size(); ++i) {
-        boost::system::error_code ec;
-        std::time_t mtime = boost::filesystem::last_write_time(m_preset_dirs[i], ec);
-        if (!ec && mtime != m_preset_dir_mtimes[i]) {
-            m_preset_dir_mtimes[i] = mtime;
-            changed = true;
-        }
-    }
-    if (!changed)
-        return;
+    BOOST_LOG_TRIVIAL(info) << "Reloading presets from disk (mark_dirty=" << mark_dirty << ").";
 
-    BOOST_LOG_TRIVIAL(info) << "Preset directory change detected, proposing changes as dirty edits.";
-
-    // Snapshot each tab's selected preset config before reloading from disk.
-    // After load_presets() both selected and edited will be updated to the new
-    // disk values (no dirty state).  We then restore the selected config to the
-    // old values so that selected != edited, which makes the dirty indicators
-    // appear for every key the AI changed.  The user can review and Save or Discard.
     struct TabSnapshot {
         PresetCollection*  collection;
         Tab*               tab;
         DynamicPrintConfig old_selected;
     };
 
+    // Snapshot current selected values before reload (only needed for mark_dirty mode).
     std::vector<TabSnapshot> snapshots;
-    for (Preset::Type type : { Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER }) {
-        Tab* tab = wxGetApp().get_tab(type);
-        if (!tab) continue;
-        PresetCollection* coll = tab->get_presets();
-        if (!coll) continue;
-        snapshots.push_back({ coll, tab, coll->get_selected_preset().config });
+    if (mark_dirty) {
+        for (Preset::Type type : { Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER }) {
+            Tab* tab = wxGetApp().get_tab(type);
+            if (!tab) continue;
+            PresetCollection* coll = tab->get_presets();
+            if (!coll) continue;
+            snapshots.push_back({ coll, tab, coll->get_selected_preset().config });
+        }
     }
 
-    // Reload all presets from disk (sets both selected and edited to new values).
+    // Reload all presets from disk (both selected and edited are updated to new values).
     wxGetApp().preset_bundle->load_presets(*wxGetApp().app_config,
         ForwardCompatibilitySubstitutionRule::EnableSilentDisableSystem);
     update_side_preset_ui();
 
-    // For each tab, restore the selected preset's config to the old values for
-    // any keys that changed, so dirty indicators appear on those fields.
-    for (auto& s : snapshots) {
-        DynamicPrintConfig& selected_config = s.collection->get_selected_preset().config;
-        DynamicPrintConfig& edited_config   = s.collection->get_edited_preset().config;
+    if (mark_dirty) {
+        // Restore old selected values so dirty indicators appear on changed fields.
+        // The user can then review and click Save or Discard in the settings panel.
+        for (auto& s : snapshots) {
+            DynamicPrintConfig& selected_config = s.collection->get_selected_preset().config;
+            DynamicPrintConfig& edited_config   = s.collection->get_edited_preset().config;
 
-        bool preset_changed = false;
-        for (const std::string& key : edited_config.keys()) {
-            const ConfigOption* new_opt = edited_config.option(key);
-            const ConfigOption* old_opt = s.old_selected.option(key);
-            if (new_opt && old_opt && *new_opt != *old_opt) {
-                // This key changed on disk: leave edited at the new value,
-                // restore selected to the old value so the dirty indicator fires.
-                selected_config.set_key_value(key, old_opt->clone());
-                preset_changed = true;
+            bool preset_changed = false;
+            for (const std::string& key : edited_config.keys()) {
+                const ConfigOption* new_opt = edited_config.option(key);
+                const ConfigOption* old_opt = s.old_selected.option(key);
+                if (new_opt && old_opt && *new_opt != *old_opt) {
+                    // selected stays at old value, edited has new value from disk.
+                    // The field widget shows the edited (new) value; dirty marker
+                    // shows it differs from the saved (selected, old) value.
+                    selected_config.set_key_value(key, old_opt->clone());
+                    preset_changed = true;
+                }
+            }
+
+            if (preset_changed) {
+                s.tab->update_dirty();
+                // Refresh field widgets so they display the edited (new) value.
+                s.tab->reload_config();
             }
         }
-
-        if (preset_changed)
-            s.tab->update_dirty();
+    } else {
+        // mark_dirty=false: AI-approved change. load_presets() already set
+        // selected == edited to the new disk values. Just refresh the field
+        // widgets so the UI shows the updated values immediately.
+        for (Preset::Type type : { Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER }) {
+            Tab* tab = wxGetApp().get_tab(type);
+            if (tab) tab->reload_config();
+        }
     }
+}
+
+void MainFrame::on_preset_poll_timer(wxTimerEvent&)
+{
+    bool changed = false;
+
+    for (const auto& dir : m_preset_dirs) {
+        boost::system::error_code ec;
+        if (!boost::filesystem::is_directory(dir, ec)) continue;
+        for (const auto& entry : boost::filesystem::directory_iterator(dir, ec)) {
+            if (entry.path().extension() != ".json") continue;
+            boost::system::error_code fe;
+            std::time_t mt = boost::filesystem::last_write_time(entry.path(), fe);
+            if (fe) continue;
+            const std::string path_str = entry.path().string();
+            auto it = m_preset_file_mtimes.find(path_str);
+            if (it == m_preset_file_mtimes.end()) {
+                // New file appeared
+                m_preset_file_mtimes[path_str] = mt;
+                changed = true;
+            } else if (it->second != mt) {
+                // Existing file was modified
+                it->second = mt;
+                changed = true;
+            }
+        }
+    }
+
+    if (!changed)
+        return;
+
+    BOOST_LOG_TRIVIAL(info) << "Preset file change detected, proposing changes as dirty edits.";
+    reload_presets_from_disk();
 }
 
 void MainFrame::on_select_default_preset(SimpleEvent& evt)

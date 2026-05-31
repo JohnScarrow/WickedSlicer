@@ -167,6 +167,7 @@
 #include "StepMeshDialog.hpp"
 #include "FilamentMapDialog.hpp"
 #include "CloneDialog.hpp"
+#include "AIAssistantPanel.hpp"
 
 #include "DeviceCore/DevFilaSystem.h"
 #include "DeviceCore/DevManager.h"
@@ -4405,6 +4406,8 @@ struct Plater::priv
     bool                        show_wireframe{ false };
     bool                        wireframe_enabled{ true };
 
+    AIAssistantPanel*           m_ai_panel{ nullptr };
+
     static const std::regex pattern_bundle;
     static const std::regex pattern_3mf;
     static const std::regex pattern_zip_amf;
@@ -5042,6 +5045,17 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     panel_sizer->Add(assemble_view, 1, wxEXPAND | wxALL, 0);
     panel_3d->SetSizer(panel_sizer);
     m_aui_mgr.AddPane(panel_3d, wxAuiPaneInfo().Name("main").CenterPane().PaneBorder(false));
+
+    m_ai_panel = new AIAssistantPanel(q);
+    m_aui_mgr.AddPane(m_ai_panel, wxAuiPaneInfo()
+        .Name("ai_assistant")
+        .Caption("AI Assistant")
+        .Right()
+        .CloseButton(true)
+        .TopDockable(false)
+        .BottomDockable(false)
+        .BestSize(wxSize(30 * wxGetApp().em_unit(), -1))
+        .Hide());
 
     m_default_window_layout = m_aui_mgr.SavePerspective();
 
@@ -18411,6 +18425,34 @@ void Plater::toggle_render_statistic_dialog()
 bool Plater::is_render_statistic_dialog_visible() const
 {
     return p->show_render_statistic_dialog;
+}
+
+void Plater::toggle_ai_assistant()
+{
+    auto& pane = p->m_aui_mgr.GetPane("ai_assistant");
+    if (!pane.IsOk()) {
+        BOOST_LOG_TRIVIAL(warning) << "[Plater] ai_assistant pane not found";
+        return;
+    }
+    if (!pane.IsShown()) {
+        // Re-assert dock position and size every time we show the pane.
+        // A stale or missing saved perspective can leave the pane with no
+        // valid dock info, causing it to appear off-screen or at zero size.
+        pane.Right()
+            .Dockable(true)
+            .Floatable(false)
+            .CloseButton(true)
+            .BestSize(wxSize(30 * wxGetApp().em_unit(), -1))
+            .Show(true);
+    } else {
+        pane.Hide();
+    }
+    p->m_aui_mgr.Update();
+}
+
+bool Plater::is_ai_assistant_visible() const
+{
+    return p->m_aui_mgr.GetPane("ai_assistant").IsShown();
 }
 
 void Plater::toggle_show_wireframe()

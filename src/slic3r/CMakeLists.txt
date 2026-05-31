@@ -22,6 +22,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Widgets/FilamentLoad.hpp
     GUI/AboutDialog.cpp
     GUI/AboutDialog.hpp
+    GUI/AIAssistantPanel.cpp
+    GUI/AIAssistantPanel.hpp
     GUI/AmsMappingPopup.cpp
     GUI/AmsMappingPopup.hpp
     GUI/AMSMaterialsSetting.cpp
@@ -762,6 +764,11 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     FIND_LIBRARY(WAYLAND_EGL_LIBRARIES    NAMES wayland-egl)
     FIND_LIBRARY(WAYLAND_CLIENT_LIBRARIES NAMES wayland-client)
     find_package(CURL REQUIRED)
+
+    # VTE terminal widget — used to embed the claude CLI in AIAssistantPanel
+    pkg_check_modules(VTE REQUIRED vte-2.91)
+    target_include_directories(libslic3r_gui PRIVATE ${VTE_INCLUDE_DIRS})
+
     target_link_libraries(libslic3r_gui
         OpenGL::EGL
         ${DBUS_LIBRARIES}
@@ -769,6 +776,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ${WAYLAND_EGL_LIBRARIES}
         ${WAYLAND_CLIENT_LIBRARIES}
         ${CURL_LIBRARIES}
+        ${VTE_LIBRARIES}
     )
 elseif (APPLE)
     if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")

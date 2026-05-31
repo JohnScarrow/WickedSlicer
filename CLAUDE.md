@@ -93,3 +93,62 @@ Preset dropdowns in the `Plater` toolbar are the UI surface that must be refresh
 - Pointer declarator left-aligned: `int* ptr`
 - No space before template angle brackets: `vector<int>`, not `vector< int >`
 - `SortIncludes: false` — do not reorder `#include` blocks
+
+---
+
+## WickedSlicer — Custom Features Already Implemented
+
+This is a fork called **WickedSlicer**. The following features are complete and committed.
+See `CustomOrcaSlicer-Project.md` for full project context and future ideas.
+
+### Live Preset Watcher (dirty-indicator mode)
+
+`src/slic3r/GUI/MainFrame.hpp` / `MainFrame.cpp`
+
+A `wxTimer` fires every 2 seconds and checks `boost::filesystem::last_write_time()` on
+three user preset directories. When a change is detected:
+
+1. Snapshot each Tab's `get_selected_preset().config`
+2. Call `PresetBundle::load_presets()` — reloads everything from disk
+3. Call `update_side_preset_ui()` — refreshes dropdowns
+4. For each tab, compare `edited_config.keys()` vs the snapshot; for changed keys,
+   restore `selected_config` to the old value via `set_key_value(key, old_opt->clone())`
+5. Call `tab->update_dirty()` — dirty indicators appear on changed fields
+
+The user then reviews proposed changes and clicks Save or Discard. `wxFileSystemWatcher`
+was tried but inotify events don't reach wxWidgets in WSL2; timer polling is the fix.
+
+**Watched directories** (Linux):
+```
+~/.config/OrcaSlicer/user/default/filament/base/
+~/.config/OrcaSlicer/user/default/process/
+~/.config/OrcaSlicer/user/default/machine/
+```
+
+**Key API facts learned:**
+- `Tab::get_presets()` and `Tab::get_config()` are public
+- `Tab::update_dirty()` is public; `Tab::load_key_value()` is protected
+- `DynamicConfig::options` map is private — iterate via `keys()` + `option(key)`
+- `DynamicConfig` deep-copies via `operator=` (clones all `ConfigOption*`)
+- `set_key_value(key, raw_ptr)` takes ownership of the pointer
+
+### Branding
+
+- Title bar: `update_title()` in `MainFrame.cpp` calls `SetTitle("WickedSlicer")`
+- Splash: `resources/images/splash_logo.svg` and `splash_logo_dark.svg` replaced with
+  vectorized WickedSlicer logo (480x480, generated with `vtracer` Python package).
+  Code path in `GUI_App.cpp` is **identical to upstream** — only the SVG assets differ.
+
+### WSL2 Launch Script
+
+`run.sh` — sets `GALLIUM_DRIVER=d3d12` + `GDK_BACKEND=x11`, then exec's the binary.
+Required for NVIDIA RTX on WSL2 (Mesa D3D12 backend + force XWayland over Wayland).
+
+## Build & Run (WSL2 / Linux)
+
+```bash
+./build_linux.sh          # always use this, not raw cmake
+./run.sh                  # launch with correct WSL2 env vars
+```
+
+Binary is at `build/src/Release/orca-slicer`.
