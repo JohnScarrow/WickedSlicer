@@ -29,6 +29,7 @@
 
 
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <ctime>
 
 // BBS
 #include "BBLTopbar.hpp"
@@ -98,7 +99,12 @@ class MainFrame : public DPIFrame
     bool     m_mac_fullscreen{false};
 #endif
     bool     m_loaded {false};
-    wxTimer* m_reset_title_text_colour_timer{ nullptr };
+    wxTimer*              m_reset_title_text_colour_timer{ nullptr };
+    wxTimer*              m_preset_poll_timer{ nullptr };
+    std::vector<std::string>  m_preset_dirs;
+    std::vector<std::time_t>  m_preset_dir_mtimes;
+    // Per-file mtime snapshot so edits to existing files are detected.
+    std::map<std::string, std::time_t> m_preset_file_mtimes;
 
     wxString    m_qs_last_input_file = wxEmptyString;
     wxString    m_qs_last_output_file = wxEmptyString;
@@ -122,6 +128,7 @@ class MainFrame : public DPIFrame
 
     void on_presets_changed(SimpleEvent&);
     void on_value_changed(wxCommandEvent&);
+    void on_preset_poll_timer(wxTimerEvent& e);
 
     bool can_start_new_project() const;
     bool can_open_project() const;
@@ -297,6 +304,10 @@ public:
     void        show_sync_dialog();
     void        update_side_preset_ui();
     void        on_select_default_preset(SimpleEvent& evt);
+    // Reload all presets from disk.
+    // mark_dirty=true  → restore old selected values so dirty indicators appear (watcher use).
+    // mark_dirty=false → accept new values immediately, no dirty indicator (AI-approved changes).
+    void        reload_presets_from_disk(bool mark_dirty = true);
 
     bool        is_loaded() const { return m_loaded; }
     bool        is_last_input_file() const  { return !m_qs_last_input_file.IsEmpty(); }
